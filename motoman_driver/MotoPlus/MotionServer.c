@@ -1364,7 +1364,9 @@ void Ros_MotionServer_AddToIncQueueProcess(Controller* controller, int groupNo)
 void Ros_MotionServer_JointTrajDataToIncQueue(Controller* controller, int groupNo)
 {
 	int interpolPeriod = controller->interpolPeriod; 
-	CtrlGroup* ctrlGroup = controller->ctrlGroups[groupNo];
+	// TODO: LJ: This is one of 4 things set to volatile for tool selection fixing purposes
+	// But it might not actually need to be marked as volatile
+	volatile CtrlGroup* ctrlGroup = controller->ctrlGroups[groupNo];
 	int i; 
 	JointMotionData _startTrajData;
 	JointMotionData* startTrajData;
@@ -1377,7 +1379,9 @@ void Ros_MotionServer_JointTrajDataToIncQueue(Controller* controller, int groupN
 	int calculationTime_ms;				// time in ms at which the interpolation takes place
 	float interpolTime;      			// time increment in second
 	long newPulsePos[MP_GRP_AXES_NUM];
-	Incremental_data incData;
+	// TODO: LJ: This is one of 4 things set to volatile for tool selection fixing purposes
+	// But it might not actually need to be marked as volatile
+	volatile Incremental_data incData;
 
 	//printf("Starting JointTrajDataProcess\r\n");	
 
@@ -1658,10 +1662,13 @@ void Ros_MotionServer_IncMoveLoopStart(Controller* controller) //<-- IP_CLK prio
 #if DX100
 	MP_POS_DATA moveData;
 #else
-	MP_EXPOS_DATA moveData;
+	// TODO: LJ: This is one of 4 things set to volatile for tool selection fixing purposes
+	// But it might not actually need to be marked as volatile
+	volatile MP_EXPOS_DATA moveData; // This is the most likely candidate for "has to be volatile" imo -LJ
 #endif
-
-	Incremental_q* q;
+	// TODO: LJ: This is one of 4 things set to volatile for tool selection fixing purposes
+	// But it might not actually need to be marked as volatile
+	volatile Incremental_q* q; 
 	int i;
 	int ret;
 	LONG time;
