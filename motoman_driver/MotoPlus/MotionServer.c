@@ -1982,10 +1982,24 @@ int Ros_MotionServer_SetSelectedTool(Controller* controller, SimpleMsg* receiveM
 #ifndef FS100
 	MP_SET_TOOL_NO_SEND_DATA setToolData;
 	MP_STD_RSP_DATA responseData;
+	int apiRet;
 #endif
 
 	int groupNo = receiveMsg->body.selectTool.groupNo;
 	int tool = receiveMsg->body.selectTool.tool;
+
+	//==================== SELECT_TOOL DEBUG ====================
+	printf("[SELECT_TOOL] >>> Request received: groupNo=%d, tool=%d, sequence=%d\r\n",
+		groupNo, tool, receiveMsg->body.selectTool.sequence);
+	printf("[SELECT_TOOL] Controller mode: IsPlay=%d, IsTeach=%d, IsRemote=%d, IsOperating=%d, IsHold=%d, IsServoOn=%d, IsMotionReady=%d\r\n",
+		Ros_Controller_IsPlay(controller),
+		Ros_Controller_IsTeach(controller),
+		Ros_Controller_IsRemote(controller),
+		Ros_Controller_IsOperating(controller),
+		Ros_Controller_IsHold(controller),
+		Ros_Controller_IsServoOn(controller),
+		Ros_Controller_IsMotionReady(controller));
+	//==========================================================
 
 	if (groupNo >= 0 && groupNo < controller->numRobot)
 	{	
@@ -1993,22 +2007,63 @@ int Ros_MotionServer_SetSelectedTool(Controller* controller, SimpleMsg* receiveM
 		{
 			//set tool that will be used by motion API
 			controller->ctrlGroups[receiveMsg->body.selectTool.groupNo]->tool = tool;
+			printf("[SELECT_TOOL] Motion-API tool set: ctrlGroups[%d]->tool = %d (this affects incremental motion + safety zones)\r\n",
+				groupNo, controller->ctrlGroups[groupNo]->tool);
 
 #ifndef FS100
 			//set jogging tool on the pendant
 			setToolData.sRobotNo = controller->ctrlGroups[receiveMsg->body.selectTool.groupNo]->groupId;
 			setToolData.sToolNo = tool;
-			mpSetToolNo(&setToolData, &responseData);
+			printf("[SELECT_TOOL] Calling mpSetToolNo: sRobotNo=%d (raw groupId enum), groupId2GrpNo=%d, sToolNo=%d\r\n",
+				setToolData.sRobotNo,
+				mpCtrlGrpId2GrpNo(controller->ctrlGroups[groupNo]->groupId),
+				setToolData.sToolNo);
+
+			memset(&responseData, 0x00, sizeof(responseData));
+			apiRet = mpSetToolNo(&setToolData, &responseData);
+
+			printf("[SELECT_TOOL] mpSetToolNo returned: apiRet=%d, responseData.err_no=0x%04X (%d)\r\n",
+				apiRet, responseData.err_no, responseData.err_no);
+
+			if (apiRet != 0 || responseData.err_no != 0)
+			{
+				const char* errMeaning;
+				switch (responseData.err_no)
+				{
+					case 0x2010: errMeaning = "Robot is in operation"; break;
+					case 0x2080: errMeaning = "Wrong operation mode (pendant tool can usually only be set in TEACH mode)"; break;
+					case 0x0000: errMeaning = "no err_no set, but apiRet was non-zero (call rejected before execution)"; break;
+					default:     errMeaning = "see Yaskawa MotoPlus error reference"; break;
+				}
+				printf("[SELECT_TOOL] WARNING: pendant jog-tool NOT updated. err_no=0x%04X meaning: %s\r\n",
+					responseData.err_no, errMeaning);
+				printf("[SELECT_TOOL] NOTE: motion-API/safety-zone tool (ctrlGroups[%d]->tool=%d) is still in effect; only the pendant UI display failed to change.\r\n",
+					groupNo, tool);
+			}
+			else
+			{
+				printf("[SELECT_TOOL] mpSetToolNo SUCCESS: pendant jog-tool updated to %d.\r\n", tool);
+			}
+#else
+			printf("[SELECT_TOOL] FS100 build: mpSetToolNo is compiled out; pendant jog-tool is never updated on this controller.\r\n");
 #endif
 
 			//We don't care if mpSetToolNo fails. It won't affect the actual motion.
 			Ros_SimpleMsg_MotionReply(receiveMsg, ROS_RESULT_SUCCESS, 0, replyMsg, groupNo);
 		}
 		else
+		{
+			printf("[SELECT_TOOL] REJECTED: tool=%d out of valid range [%d..%d]\r\n",
+				tool, MIN_VALID_TOOL_INDEX, MAX_VALID_TOOL_INDEX);
 			Ros_SimpleMsg_MotionReply(receiveMsg, ROS_RESULT_INVALID, ROS_RESULT_INVALID_DATA_TOOLNO, replyMsg, groupNo);
+		}
 	}
 	else
+	{
+		printf("[SELECT_TOOL] REJECTED: groupNo=%d invalid (numRobot=%d)\r\n", groupNo, controller->numRobot);
 		Ros_SimpleMsg_MotionReply(receiveMsg, ROS_RESULT_INVALID, ROS_RESULT_INVALID_GROUPNO, replyMsg, groupNo);
+	}
 
+	printf("[SELECT_TOOL] <<< Done.\r\n");
 	return 0;
 }
