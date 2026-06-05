@@ -1406,8 +1406,8 @@ void Ros_MotionServer_JointTrajDataToIncQueue(Controller* controller, int groupN
 	incData.frame = MP_INC_PULSE_DTYPE;
 	// also prevents ROS_MSG_MOTO_SELECT_TOOL from changing the active tool while processing
 	incData.tool = ctrlGroup->tool;
-	printf("[SELECT_TOOL][TRAJ->INC] group=%d capture_tool=%d start_t=%dms end_t=%dms hasDataToProcess=%d\r\n",
-		groupNo, incData.tool, startTrajData->time, endTrajData->time, ctrlGroup->hasDataToProcess);
+	//printf("[SELECT_TOOL][TRAJ->INC] group=%d tool=%d start_t=%dms end_t=%dms\r\n",
+	//	groupNo, incData.tool, startTrajData->time, endTrajData->time);
 	
 	// Calculate an acceleration coefficients
 	memset(&accCoef1, 0x00, sizeof(accCoef1));
@@ -1717,13 +1717,10 @@ void Ros_MotionServer_IncMoveLoopStart(Controller* controller) //<-- IP_CLK prio
 						moveData.grp_pos_info[i].pos_tag.data[4] = q->data[q->idx].user;
 						if (lastSentTool[i] != moveData.grp_pos_info[i].pos_tag.data[2])
 						{
-							printf("[SELECT_TOOL][INC->MOVE] grp=%d tool_change=%d->%d q_cnt=%d q_time=%ld msg_time=%ld frame=%d user=%d\r\n",
+							printf("[SELECT_TOOL][INC->MOVE] grp=%d tool=%d->%d frame=%d user=%d\r\n",
 								i,
 								lastSentTool[i],
 								moveData.grp_pos_info[i].pos_tag.data[2],
-								q->cnt,
-								q_time,
-								time,
 								moveData.grp_pos_info[i].pos_tag.data[3],
 								moveData.grp_pos_info[i].pos_tag.data[4]);
 							lastSentTool[i] = moveData.grp_pos_info[i].pos_tag.data[2];
@@ -1748,7 +1745,7 @@ void Ros_MotionServer_IncMoveLoopStart(Controller* controller) //<-- IP_CLK prio
 									|| (moveData.grp_pos_info[i].pos_tag.data[3] != q->data[q->idx].frame)
 									|| (moveData.grp_pos_info[i].pos_tag.data[4] != q->data[q->idx].user) )
 								{
-									printf("[SELECT_TOOL][INC->MOVE] grp=%d split_batch due_to_format_change tool:%d->%d frame:%d->%d user:%d->%d\r\n",
+									printf("[SELECT_TOOL][INC->MOVE] grp=%d split tool:%d->%d frame:%d->%d user:%d->%d\r\n",
 										i,
 										moveData.grp_pos_info[i].pos_tag.data[2], q->data[q->idx].tool,
 										moveData.grp_pos_info[i].pos_tag.data[3], q->data[q->idx].frame,
@@ -2006,15 +2003,17 @@ int Ros_MotionServer_SetSelectedTool(Controller* controller, SimpleMsg* receiveM
 	MP_SET_TOOL_NO_SEND_DATA setToolData;
 	MP_STD_RSP_DATA responseData;
 	int apiRet;
+	MP_GET_TOOL_NO_RSP_DATA getToolData;
+	LONG getRet;
 #endif
 
 	int groupNo = receiveMsg->body.selectTool.groupNo;
 	int tool = receiveMsg->body.selectTool.tool;
 
 	//==================== SELECT_TOOL DEBUG ====================
-	printf("[SELECT_TOOL] >>> Request received: groupNo=%d, tool=%d, sequence=%d\r\n",
+	printf("[SELECT_TOOL] req: group=%d tool=%d seq=%d\r\n",
 		groupNo, tool, receiveMsg->body.selectTool.sequence);
-	printf("[SELECT_TOOL] Controller mode: IsPlay=%d, IsTeach=%d, IsRemote=%d, IsOperating=%d, IsHold=%d, IsServoOn=%d, IsMotionReady=%d\r\n",
+	printf("[SELECT_TOOL] mode: play=%d teach=%d remote=%d operating=%d hold=%d servo=%d motionReady=%d\r\n",
 		Ros_Controller_IsPlay(controller),
 		Ros_Controller_IsTeach(controller),
 		Ros_Controller_IsRemote(controller),
@@ -2028,47 +2027,60 @@ int Ros_MotionServer_SetSelectedTool(Controller* controller, SimpleMsg* receiveM
 	{	
 		if (tool >= MIN_VALID_TOOL_INDEX && tool <= MAX_VALID_TOOL_INDEX)
 		{
+			int previousStoredTool = controller->ctrlGroups[groupNo]->tool;
+
+#ifndef FS100
+			//Read controller's operation tool BEFORE the change, to compare against the value
+			//the driver last stored (catches drift between tool changes, not just this request).
+			memset(&getToolData, 0x00, sizeof(getToolData));
+			getRet = mpGetToolNo(controller->ctrlGroups[groupNo]->groupId, &getToolData);
+			printf("[SELECT_TOOL] get(before): ret=%ld err=0x%04X controllerTool=%d storedTool=%d\r\n",
+				getRet, getToolData.err_no, getToolData.sToolNo, previousStoredTool);
+			if ((getRet == 0 && getToolData.err_no == 0) && getToolData.sToolNo != previousStoredTool)
+				printf("[SELECT_TOOL] get(before): mismatch controller=%d stored=%d\r\n",
+					getToolData.sToolNo, previousStoredTool);
+#endif
+
 			//set tool that will be used by motion API
 			controller->ctrlGroups[receiveMsg->body.selectTool.groupNo]->tool = tool;
-			printf("[SELECT_TOOL] Motion-API tool set: ctrlGroups[%d]->tool = %d (this affects incremental motion + safety zones)\r\n",
+			printf("[SELECT_TOOL] stored tool: group=%d tool=%d\r\n",
 				groupNo, controller->ctrlGroups[groupNo]->tool);
 
 #ifndef FS100
 			//set jogging tool on the pendant
 			setToolData.sRobotNo = controller->ctrlGroups[receiveMsg->body.selectTool.groupNo]->groupId;
 			setToolData.sToolNo = tool;
-			printf("[SELECT_TOOL] Calling mpSetToolNo: sRobotNo=%d (raw groupId enum), groupId2GrpNo=%d, sToolNo=%d\r\n",
-				setToolData.sRobotNo,
-				mpCtrlGrpId2GrpNo(controller->ctrlGroups[groupNo]->groupId),
-				setToolData.sToolNo);
 
 			memset(&responseData, 0x00, sizeof(responseData));
 			apiRet = mpSetToolNo(&setToolData, &responseData);
-
-			printf("[SELECT_TOOL] mpSetToolNo returned: apiRet=%d, responseData.err_no=0x%04X (%d)\r\n",
-				apiRet, responseData.err_no, responseData.err_no);
+			printf("[SELECT_TOOL] setToolNo: robot=%d tool=%d ret=%d err=0x%04X\r\n",
+				setToolData.sRobotNo, setToolData.sToolNo, apiRet, responseData.err_no);
 
 			if (apiRet != 0 || responseData.err_no != 0)
 			{
 				const char* errMeaning;
 				switch (responseData.err_no)
 				{
-					case 0x2010: errMeaning = "Robot is in operation"; break;
-					case 0x2080: errMeaning = "Wrong operation mode (pendant tool can usually only be set in TEACH mode)"; break;
-					case 0x0000: errMeaning = "no err_no set, but apiRet was non-zero (call rejected before execution)"; break;
-					default:     errMeaning = "see Yaskawa MotoPlus error reference"; break;
+					case 0x2010: errMeaning = "robot in operation"; break;
+					case 0x2080: errMeaning = "wrong operation mode"; break;
+					case 0x0000: errMeaning = "no err_no (rejected before execution)"; break;
+					default:     errMeaning = "see MotoPlus error reference"; break;
 				}
-				printf("[SELECT_TOOL] WARNING: pendant jog-tool NOT updated. err_no=0x%04X meaning: %s\r\n",
+				printf("[SELECT_TOOL] setToolNo failed: err=0x%04X (%s)\r\n",
 					responseData.err_no, errMeaning);
-				printf("[SELECT_TOOL] NOTE: motion-API/safety-zone tool (ctrlGroups[%d]->tool=%d) is still in effect; only the pendant UI display failed to change.\r\n",
-					groupNo, tool);
 			}
-			else
-			{
-				printf("[SELECT_TOOL] mpSetToolNo SUCCESS: pendant jog-tool updated to %d.\r\n", tool);
-			}
+
+			//Read back controller's operation tool AFTER the change to confirm it took effect.
+			//Per docs, sRobotNo expects the group-ID enum (MP_R1_GID, MP_R2_GID, ...), which is groupId.
+			memset(&getToolData, 0x00, sizeof(getToolData));
+			getRet = mpGetToolNo(controller->ctrlGroups[groupNo]->groupId, &getToolData);
+			printf("[SELECT_TOOL] get(after): ret=%ld err=0x%04X controllerTool=%d storedTool=%d\r\n",
+				getRet, getToolData.err_no, getToolData.sToolNo, controller->ctrlGroups[groupNo]->tool);
+			if ((getRet == 0 && getToolData.err_no == 0) && getToolData.sToolNo != controller->ctrlGroups[groupNo]->tool)
+				printf("[SELECT_TOOL] get(after): mismatch controller=%d stored=%d\r\n",
+					getToolData.sToolNo, controller->ctrlGroups[groupNo]->tool);
 #else
-			printf("[SELECT_TOOL] FS100 build: mpSetToolNo is compiled out; pendant jog-tool is never updated on this controller.\r\n");
+			printf("[SELECT_TOOL] FS100: setToolNo not available\r\n");
 #endif
 
 			//We don't care if mpSetToolNo fails. It won't affect the actual motion.
@@ -2076,17 +2088,17 @@ int Ros_MotionServer_SetSelectedTool(Controller* controller, SimpleMsg* receiveM
 		}
 		else
 		{
-			printf("[SELECT_TOOL] REJECTED: tool=%d out of valid range [%d..%d]\r\n",
+			printf("[SELECT_TOOL] rejected: tool=%d out of range [%d..%d]\r\n",
 				tool, MIN_VALID_TOOL_INDEX, MAX_VALID_TOOL_INDEX);
 			Ros_SimpleMsg_MotionReply(receiveMsg, ROS_RESULT_INVALID, ROS_RESULT_INVALID_DATA_TOOLNO, replyMsg, groupNo);
 		}
 	}
 	else
 	{
-		printf("[SELECT_TOOL] REJECTED: groupNo=%d invalid (numRobot=%d)\r\n", groupNo, controller->numRobot);
+		printf("[SELECT_TOOL] rejected: group=%d invalid (numRobot=%d)\r\n", groupNo, controller->numRobot);
 		Ros_SimpleMsg_MotionReply(receiveMsg, ROS_RESULT_INVALID, ROS_RESULT_INVALID_GROUPNO, replyMsg, groupNo);
 	}
 
-	printf("[SELECT_TOOL] <<< Done.\r\n");
+	printf("[SELECT_TOOL] done\r\n");
 	return 0;
 }
