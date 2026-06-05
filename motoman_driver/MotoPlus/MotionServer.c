@@ -1406,6 +1406,8 @@ void Ros_MotionServer_JointTrajDataToIncQueue(Controller* controller, int groupN
 	incData.frame = MP_INC_PULSE_DTYPE;
 	// also prevents ROS_MSG_MOTO_SELECT_TOOL from changing the active tool while processing
 	incData.tool = ctrlGroup->tool;
+	printf("[SELECT_TOOL][TRAJ->INC] group=%d capture_tool=%d start_t=%dms end_t=%dms hasDataToProcess=%d\r\n",
+		groupNo, incData.tool, startTrajData->time, endTrajData->time, ctrlGroup->hasDataToProcess);
 	
 	// Calculate an acceleration coefficients
 	memset(&accCoef1, 0x00, sizeof(accCoef1));
@@ -1674,11 +1676,14 @@ void Ros_MotionServer_IncMoveLoopStart(Controller* controller) //<-- IP_CLK prio
 	LONG time;
 	LONG q_time;
 	int axis;
+	int lastSentTool[MP_GRP_NUM];
 	//BOOL bNoData = TRUE;  // for testing
 	
 	printf("IncMoveTask Started\r\n");
 	
 	memset(&moveData, 0x00, sizeof(moveData));
+	for (i = 0; i < MP_GRP_NUM; i++)
+		lastSentTool[i] = -1;
 
 	for(i=0; i<controller->numGroup; i++)
 	{
@@ -1710,6 +1715,19 @@ void Ros_MotionServer_IncMoveLoopStart(Controller* controller) //<-- IP_CLK prio
 						moveData.grp_pos_info[i].pos_tag.data[2] = q->data[q->idx].tool;
 						moveData.grp_pos_info[i].pos_tag.data[3] = q->data[q->idx].frame;
 						moveData.grp_pos_info[i].pos_tag.data[4] = q->data[q->idx].user;
+						if (lastSentTool[i] != moveData.grp_pos_info[i].pos_tag.data[2])
+						{
+							printf("[SELECT_TOOL][INC->MOVE] grp=%d tool_change=%d->%d q_cnt=%d q_time=%ld msg_time=%ld frame=%d user=%d\r\n",
+								i,
+								lastSentTool[i],
+								moveData.grp_pos_info[i].pos_tag.data[2],
+								q->cnt,
+								q_time,
+								time,
+								moveData.grp_pos_info[i].pos_tag.data[3],
+								moveData.grp_pos_info[i].pos_tag.data[4]);
+							lastSentTool[i] = moveData.grp_pos_info[i].pos_tag.data[2];
+						}
 						
 						memcpy(&moveData.grp_pos_info[i].pos, &q->data[q->idx].inc, sizeof(LONG) * MP_GRP_AXES_NUM);
 					
@@ -1730,6 +1748,11 @@ void Ros_MotionServer_IncMoveLoopStart(Controller* controller) //<-- IP_CLK prio
 									|| (moveData.grp_pos_info[i].pos_tag.data[3] != q->data[q->idx].frame)
 									|| (moveData.grp_pos_info[i].pos_tag.data[4] != q->data[q->idx].user) )
 								{
+									printf("[SELECT_TOOL][INC->MOVE] grp=%d split_batch due_to_format_change tool:%d->%d frame:%d->%d user:%d->%d\r\n",
+										i,
+										moveData.grp_pos_info[i].pos_tag.data[2], q->data[q->idx].tool,
+										moveData.grp_pos_info[i].pos_tag.data[3], q->data[q->idx].frame,
+										moveData.grp_pos_info[i].pos_tag.data[4], q->data[q->idx].user);
 									// Different format can't combine information
 									break;
 								}
